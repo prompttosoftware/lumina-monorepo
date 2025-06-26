@@ -1,0 +1,889 @@
+# Project Plan: Lumina - An AI-Powered Learning Platform
+
+## 1. Introduction and Overview
+
+Lumina is an AI-powered learning platform designed to provide personalized education experiences for students. It will adapt to individual student needs, offer real-time feedback, and provide intuitive dashboards for teachers and administrators to monitor progress and manage content.
+
+The platform will cater to three main user roles:
+- **Students**: Engage with personalized learning paths, receive real-time feedback, track their progress.
+- **Teachers**: Create and manage courses, assign materials, monitor student performance, and access class-level insights.
+- **Administrators**: Manage users, oversee platform settings, and view high-level analytics.
+
+## 2. System Architecture
+
+Lumina will follow a microservices-oriented architecture, leveraging cloud-native principles for scalability, resilience, and independent deployment. While logically decoupled, all services will reside within a single monorepository for simplified development and deployment initially, allowing for clear demarcation of responsibility without immediate overhead of multi-repo management.
+
+### 2.1 Technology Stack Choices
+
+-   **Backend**: Python (FastAPI) for API services, leveraging its high performance, async capabilities, and thriving data science ecosystem.
+-   **Database**: PostgreSQL for relational data storage (user profiles, course data, assessment definitions). MongoDB for unstructured data (learning paths, personalized content suggestions, real-time analytics events) or document-oriented data that benefits from schema flexibility. Initially, PostgreSQL will be the primary data store and MongoDB will be introduced if complex, non-relational data needs arise or if the adaptive learning engine benefits from a NoSQL approach for dynamic content. For the initial MVP, a single PostgreSQL instance will suffice.
+-   **AI/ML Framework**: PyTorch or TensorFlow for developing the Adaptive Learning Engine models.
+-   **Frontend**: React.js with TypeScript for a robust, scalable, and maintainable user interface.
+-   **Caching**: Redis for session management, API response caching, and real-time data queues.
+-   **Message Broker**: RabbitMQ or Kafka for inter-service communication (e.g., real-time feedback processing, analytics event ingestion) and asynchronous task processing. Initially, a simpler approach using direct API calls or lightweight queues will be used before introducing a full-fledged message broker.
+-   **Deployment**: Docker and Kubernetes for containerization and orchestration.
+-   **Cloud Provider**: AWS (services like EC2, RDS, EKS, S3, Lambda, SQS/SNS).
+-   **CI/CD**: GitHub Actions or GitLab CI/CD.
+
+### 2.2 Architectural Diagram (Conceptual)
+
+A more detailed diagram would be generated during the design phase, but conceptually:
+
+```
+[User Devices]
+      |
+      | (HTTP/S)
+      V
+[Load Balancer]
+      |
+      +---------------------------------+-------------------------------------+
+      |                                 |                                     |
+      V                                 V                                     V
+[Frontend Service]                [API Gateway Service]                [Auth Service]
+(React App)                        (FastAPI)                            (FastAPI)
+      |                                 |                                     |
+      +---------------------------------+-------------------------------------+
+      |                                 |                                     |
+      V                                 V                                     V
+[User Service]                    [Course Service]                     [Content Service]
+(FastAPI)                           (FastAPI)                            (FastAPI)
+      |                                 |                                     |
+      V                                 V                                     V
+[Assessment Service]              [Feedback Service]                   [Adaptive Learning Service]
+(FastAPI)                           (FastAPI)                            (FastAPI/ML)
+      |                                 |                                     |
+      +---------------------------------+-------------------------------------+
+      |                                 |                                     |
+      V                                 V                                     V
+[PostgreSQL DB]                   [Redis Cache]                       [S3 Storage]
+(RDS)                                                                     (Static Assets)
+      ^                                 ^                                       ^
+      |                                 |                                       |
+      +---------------------------------+---------------------------------------+
+      |                                 |
+      V                                 V
+[Message Broker (RabbitMQ/Kafka)] <--- [Analytics Service]
+(Async Events)
+```
+
+## 3. Core Components (Detailed Breakdown)
+
+### 3.1 User & Authentication Management (Auth Service & User Service)
+
+#### 3.1.1 Core Functionality
+-   User registration (Student, Teacher, Admin roles).
+-   User login (email/password).
+-   Password reset/recovery.
+-   Role-based access control (RBAC).
+-   User profile management (update details, change password).
+
+#### 3.1.2 Technical Design & Architecture
+-   **Auth Service**: Handles user authentication (login, registration, token generation).
+    -   **Technology**: FastAPI.
+    -   **Authentication Method**: JWT (JSON Web Tokens) for stateless authentication. Access tokens will be short-lived, refresh tokens longer-lived.
+    -   **Hashing**: bcrypt for password hashing.
+    -   **Endpoints**: `/auth/register`, `/auth/login`, `/auth/refresh-token`, `/auth/forgot-password`, `/auth/reset-password`.
+-   **User Service**: Manages user profiles and role assignments.
+    -   **Technology**: FastAPI.
+    -   **Database**: PostgreSQL.
+    -   **Schema**: `users` table (`id`, `email`, `hashed_password`, `first_name`, `last_name`, `role`, `created_at`, `updated_at`). `roles` table (`id`, `name`). `user_roles` join table.
+    -   **Endpoints**: `/users/{user_id}`, `/users`, `/users/{user_id}/roles`.
+-   **API Gateway**: All authentication requests will go through the Auth Service. Other services will validate JWTs received via the API Gateway.
+
+#### 3.1.3 User Experience
+-   Clear, intuitive registration and login forms.
+-   Feedback on invalid credentials or unsuccessful operations.
+-   Password strength indicator during registration/change.
+
+#### 3.1.4 Data Management
+-   User data stored in PostgreSQL.
+-   Password hashes stored, never plain text.
+-   JWTs stored client-side (e.g., HttpOnly cookies for access tokens, local storage for refresh tokens with strict security measures). Redis can be used for blacklisting revoked tokens.
+
+#### 3.1.5 Error Handling & Edge Cases
+-   Invalid credentials, existing user email, disabled accounts.
+-   Expired/invalid tokens.
+-   Rate limiting on login attempts to prevent brute-force attacks.
+
+#### 3.1.6 Security Considerations
+-   HTTPS enforcement.
+-   Input validation on all user inputs.
+-   OWASP Top 10 mitigation:
+    -   Injection: Parameterized queries for DB access.
+    -   Broken Authentication: Secure password hashing, JWTs, rate limiting, token expiration.
+    -   Sensitive Data Exposure: Encryption in transit (TLS), encryption at rest (DB encryption), no sensitive data in logs.
+    -   Broken Access Control: RBAC implemented via middleware/decorators checking user roles based on JWT claims.
+    -   Cross-Site Scripting (XSS): Frontend sanitizes user input, backend validates.
+    -   Security Misconfiguration: Secure defaults, regular security audits.
+-   Token revocation mechanisms (e.g., via refresh tokens or blacklisting).
+
+#### 3.1.7 Performance & Scalability
+-   Auth and User Services designed to be stateless (except for database).
+-   JWT verification is fast.
+-   Database read replicas can scale user profile lookups.
+
+#### 3.1.8 Deployment & Infrastructure
+-   Each service deployed as a Docker container.
+-   Orchestrated by Kubernetes (EKS on AWS).
+-   PostgreSQL managed via AWS RDS.
+
+#### 3.1.9 Test-Driven Development Verification (Auth Service Example)
+-   **Immediate Verification**:
+    -   Manually test registration and login via API client (e.g., Postman).
+    -   Run a simple `pytest` for the registration endpoint function: `assert register_user("test@example.com", "password123")["message"] == "User registered successfully"`.
+-   **Incremental Testing**:
+    -   **Unit Tests (Pytest)**:
+        -   Test password hashing with bcrypt.
+        -   Test JWT encoding/decoding.
+        -   Test `create_access_token` and `verify_password` functions in isolation.
+        -   Test registration function: `test_register_user_success`, `test_register_user_exists`.
+        -   Test login function: `test_login_success`, `test_login_invalid_credentials`.
+        -   Test token refresh.
+        -   _Common Patterns_: `test_function_name_success`, `test_function_name_failure_reason`.
+        -   _Mocking Strategy_: When testing `AuthService` functions that interact with the database, use `pytest-mock` to mock the database session or user repository. Keep mocks simple, e.g., `mocker.patch('app.database.get_user_by_email', return_value=None)`.
+    -   **Integration Tests (Pytest with TestClient)**:
+        -   Test entire API endpoints using FastAPI's `TestClient`.
+        -   Simulate registration, then login, then access a protected endpoint.
+        -   Test `/auth/register` and `/auth/login` endpoints directly.
+        -   Test that an invalid token leads to 401 Unauthorized for protected endpoints.
+        -   _Minimal Setup_: Use an in-memory SQLite database for integration tests to avoid spinning up a full PostgreSQL instance. This provides a fast, isolated testing environment.
+    -   **End-to-End Tests (Playwright/Cypress)**:
+        -   Automate browser interaction: navigate to login page, enter credentials, verify successful redirection to dashboard.
+        -   Automate registration flow from UI.
+
+#### 3.1.10 Testing Strategy
+-   **Unit Tests**: Pytest, focusing on individual functions and methods.
+    -   `python -m pip install pytest pytest-mock`
+    -   Example: `test_auth.py`, `test_users.py`.
+    -   Test data: Defined inline in test cases or simple fixtures.
+-   **Integration Tests**: Pytest with FastAPI's `TestClient`.
+    -   Use `SQLAlchemy`'s in-memory SQLite for DB integration tests.
+    -   Example: `test_auth_api.py`, `test_users_api.py`.
+    -   Test data: Inserted directly into the test database before each test.
+-   **E2E Tests**: Playwright (`python -m pip install playwright`).
+    -   `playwright install` to install browser binaries.
+    -   Test data: Generated via test APIs or direct database seeding.
+
+#### 3.1.11 Monitoring & Logging
+-   **Logging**: Structured logs (JSON) using `logging` module in Python, sent to a centralized logging service (e.g., AWS CloudWatch Logs, ELK stack).
+-   **Metrics**: Prometheus/Grafana for monitoring API request rates, error rates, latency, active users.
+-   **Alerting**: Alarms on critical errors or performance degradation.
+
+#### 3.1.12 Dependencies
+-   PostgreSQL database.
+-   Redis (for session caching, if implemented beyond basic JWTs).
+-   API Gateway (for routing and potentially token validation).
+
+#### 3.1.13 Potential Risks & Mitigations
+-   **Risk**: Brute-force attacks on login.
+    -   **Mitigation**: Rate limiting, CAPTCHA after multiple failed attempts, account lockout.
+-   **Risk**: Stolen JWTs.
+    -   **Mitigation**: Short-lived access tokens, refresh token rotation, token blacklisting.
+-   **Risk**: SQL Injection / XSS.
+    -   **Mitigation**: Parameterized queries, input validation, proper frontend sanitization.
+
+## 3.2 Course Management (Course Service)
+
+#### 3.2.1 Core Functionality
+-   Teachers can create, update, delete courses.
+-   Teachers can add/remove content (lessons, quizzes, assignments) to courses.
+-   Students can enroll in courses (manual enrollment by teacher or self-enrollment).
+-   Associate course content with specific topics/skills for adaptive learning.
+
+#### 3.2.2 Technical Design & Architecture
+-   **Technology**: FastAPI.
+-   **Database**: PostgreSQL.
+-   **Schema**:
+    -   `courses` table (`id`, `title`, `description`, `teacher_id`, `status` (draft/published), `created_at`, `updated_at`).
+    -   `course_contents` table (`id`, `course_id`, `content_type` (lesson/quiz/assignment), `content_source_id`, `order_index`, `topic_id`).
+    -   `topics` table (`id`, `name`, `description`).
+    -   `student_courses` join table (`student_id`, `course_id`, `enrollment_date`).
+-   **Endpoints**:
+    -   Teachers: `/courses`, `/courses/{id}`, `/courses/{id}/content`, `/courses/{id}/enroll`, `/topics`.
+    -   Students: `/my-courses`, `/courses/{id}/view`.
+
+#### 3.2.3 User Experience
+-   Intuitive course creation forms.
+-   Drag-and-drop interface (stretch goal) for reordering course content.
+-   Clear course overview for students.
+
+#### 3.2.4 Data Management
+-   Course data stored in PostgreSQL.
+-   Content relationships (lessons, quizzes) managed via foreign keys in `course_contents`.
+
+#### 3.2.5 Error Handling & Edge Cases
+-   Attempting to delete a course with active enrollments.
+-   Invalid content type or source ID.
+-   Unauthorized access to course creation/management.
+
+#### 3.2.6 Security Considerations
+-   Ensure only authenticated teachers can create/modify courses they own.
+-   Proper authorization checks for content access based on enrollment.
+
+#### 3.2.7 Performance & Scalability
+-   Efficient queries for retrieving course details and associated content.
+-   Caching popular course data using Redis.
+
+#### 3.2.8 Deployment & Infrastructure
+-   Containerized FastAPI service on Kubernetes.
+-   PostgreSQL RDS instance.
+
+#### 3.2.9 Test-Driven Development Verification
+-   **Immediate Verification**:
+    -   Manually send POST request to `/courses` as a teacher.
+    -   `assert create_course("Calculus", teacher_id=1)["title"] == "Calculus"`.
+-   **Incremental Testing**:
+    -   **Unit Tests**:
+        -   Test `create_course`, `get_course`, `update_course`, `delete_course` methods.
+        -   Test `add_content_to_course`, `remove_content_from_course`.
+        -   _Mocking_: Mock the database session when testing service logic.
+    -   **Integration Tests**:
+        -   Use `TestClient` to test course creation, retrieval, and updates via API.
+        -   Test authentication/authorization of course endpoints (e.g., student trying to create a course).
+        -   Verify `course_contents` relationships are correctly formed.
+        -   _Minimal Setup_: In-memory SQLite for fast database integration tests.
+    -   **End-to-End Tests**:
+        -   Teacher workflow: Login as teacher -> Create course -> Add lesson -> Verify on dashboard.
+        -   Student workflow: Login as student -> Enroll in course -> View course content.
+
+#### 3.2.10 Testing Strategy
+-   **Unit Tests**: Pytest, isolating business logic from data access.
+-   **Integration Tests**: Pytest with `TestClient` and in-memory SQLite for data persistence.
+-   **E2E Tests**: Playwright for UI workflows.
+
+#### 3.2.11 Monitoring & Logging
+-   Logs for course lifecycle events (creation, update, deletion).
+-   Metrics for course creation rates, enrollment rates.
+
+#### 3.2.12 Dependencies
+-   Auth Service (for user authentication and role validation).
+-   User Service (to link to teacher/student IDs).
+-   Content Service (for the concrete lesson/quiz/assignment data).
+
+#### 3.2.13 Potential Risks & Mitigations
+-   **Risk**: Complex relationships and data inconsistencies if content types change.
+    -   **Mitigation**: Clear schema design, foreign key constraints, robust content type validation.
+-   **Risk**: Performance issues with large numbers of courses/content.
+    -   **Mitigation**: Pagination, indexing on frequently queried columns, caching.
+
+## 3.3 Content Delivery (Content Service)
+
+#### 3.3.1 Core Functionality
+-   Store and serve various content types: text lessons, quizzes, videos, assignments.
+-   Associate content with metadata (e.g., difficulty, prerequisites, skills covered).
+-   Provide content for the Adaptive Learning Engine.
+
+#### 3.3.2 Technical Design & Architecture
+-   **Technology**: FastAPI.
+-   **Database**: PostgreSQL for metadata, S3 for large binary objects (videos, images, PDFs).
+-   **Schema**:
+    -   `lessons` table (`id`, `title`, `body_html`, `difficulty`, `prerequisites`, `skill_tags`).
+    -   `quizzes` table (`id`, `title`, `description`, `question_structure_json`).
+    -   `assignments` table (`id`, `title`, `description`, `due_date`, `submission_types`).
+    -   `videos` table (`id`, `title`, `s3_url`, `duration_seconds`).
+    -   Generic `content_items` table or polymorphic relations could be considered for a more unified approach, but separate tables are simpler to start. Initially, separate tables for each content type.
+-   **Endpoints**: e.g., `/lessons/{id}`, `/quizzes/{id}`, `/assignments/{id}`, `/videos/{id}`.
+
+#### 3.3.3 User Experience
+-   Responsive display of content on various devices.
+-   Integrated media players for videos.
+-   Clear presentation of quiz questions and answer options.
+
+#### 3.3.4 Data Management
+-   Metadata in PostgreSQL.
+-   Actual files (videos, images) stored in AWS S3.
+-   Pre-signed URLs for secure, temporary access to S3 content.
+
+#### 3.3.5 Error Handling & Edge Cases
+-   Content not found.
+-   Invalid content ID.
+-   Accessing restricted content without proper enrollment.
+
+#### 3.3.6 Security Considerations
+-   S3 bucket policies for restricted access.
+-   Pre-signed URLs for transient access to private content.
+-   Input validation for content creation (e.g., prevent XSS in HTML content).
+
+#### 3.3.7 Performance & Scalability
+-   CDN (CloudFront) for fast content delivery (especially S3 static assets).
+-   Caching content metadata in Redis.
+
+#### 3.3.8 Deployment & Infrastructure
+-   Containerized FastAPI service on Kubernetes.
+-   AWS S3 for content storage.
+-   AWS CloudFront for CDN.
+
+#### 3.3.9 Test-Driven Development Verification
+-   **Immediate Verification**:
+    -   Manually upload a video to S3 and verify the pre-signed URL generates correctly.
+    -   `assert get_lesson_by_id(1)["title"] == "Introduction to Algebra"`.
+-   **Incremental Testing**:
+    -   **Unit Tests**:
+        -   Test functions for creating, retrieving, updating each content type (e.g., `create_lesson`, `get_quiz`).
+        -   Test S3 pre-signed URL generation.
+        -   _Mocking_: Mock database interactions and S3 client calls.
+    -   **Integration Tests**:
+        -   Test API endpoints for fetching content (e.g., `/lessons/1`).
+        -   Verify that content from different services (Course, Content) links correctly.
+        -   _Minimal Setup_: In-memory SQLite for metadata, use a simple mock for S3 client or test with local S3 emulator (e.g., `moto`).
+    -   **End-to-End Tests**:
+        -   Student workflow: Login -> Navigate to course -> Click on lesson -> Verify content loads correctly (e.g., video plays, quiz questions display).
+
+#### 3.3.10 Testing Strategy
+-   **Unit Tests**: Pytest for isolated functions.
+-   **Integration Tests**: Pytest with `TestClient` for API calls, `moto` for S3 interactions.
+-   **E2E Tests**: Playwright for full UI content display verification.
+
+#### 3.3.11 Monitoring & Logging
+-   Logs for content access, upload/download errors.
+-   Metrics for content popularity, S3 transfer rates.
+
+#### 3.3.12 Dependencies
+-   AWS S3.
+-   AWS CloudFront.
+-   Course Service (which references `content_source_id`).
+
+#### 3.3.13 Potential Risks & Mitigations
+-   **Risk**: High storage costs for video/large files.
+    -   **Mitigation**: Implement content compression, efficient streaming formats, lifecycle policies on S3.
+-   **Risk**: Slow content delivery.
+    -   **Mitigation**: CDN usage, optimize content sizes, regionally distributed S3 buckets if global audience.
+
+## 3.4 Assessment Engine (Assessment Service)
+
+#### 3.4.1 Core Functionality
+-   Administers quizzes and assignments.
+-   Collects student responses.
+-   Automated grading for multiple-choice, true/false, short answer (basic regex matching).
+-   Stores assessment results and facilitates teacher review for subjective questions.
+
+#### 3.4.2 Technical Design & Architecture
+-   **Technology**: FastAPI.
+-   **Database**: PostgreSQL for assessment definitions and student submissions/results.
+-   **Schema**:
+    -   `quiz_attempts` table (`id`, `quiz_id`, `student_id`, `start_time`, `end_time`, `score`, `status` (in_progress/submitted/graded)).
+    -   `quiz_responses` table (`id`, `attempt_id`, `question_id`, `student_answer_json`, `is_correct`, `feedback`).
+    -   `assignment_submissions` table (`id`, `assignment_id`, `student_id`, `submission_text/s3_url`, `submission_date`, `grade`, `feedback_text`, `status` (submitted/graded)).
+-   **Endpoints**: e.g., `/quizzes/{id}/start`, `/quizzes/{id}/submit`, `/assignments/{id}/submit`, `/student-grades/{student_id}`.
+
+#### 3.4.3 User Experience
+-   Clear presentation of questions, timer for quizzes.
+-   Form for assignment submissions.
+-   Immediate feedback/score after quiz submission (for auto-gradable questions).
+
+#### 3.4.4 Data Management
+-   Quiz/Assignment structure: Stored in `quizzes`/`assignments` in Content Service.
+-   Student responses: Stored in PostgreSQL.
+-   Large assignment files stored in S3 via Content Service.
+
+#### 3.4.5 Error Handling & Edge Cases
+-   Submitting an expired quiz.
+-   Invalid answer format.
+-   Concurrency issues with multiple submissions.
+
+#### 3.4.6 Security Considerations
+-   Ensure submissions are tied to the correct student.
+-   Prevent tampering with quiz answers or scores.
+-   Secure handling of sensitive student data.
+
+#### 3.4.7 Performance & Scalability
+-   Efficient storage and retrieval of numerous student attempts/responses.
+-   Asynchronous grading for complex assignments (using a task queue like Celery/SQS).
+
+#### 3.4.8 Deployment & Infrastructure
+-   Containerized FastAPI service on Kubernetes.
+-   PostgreSQL RDS.
+-   Potentially a task queue (e.g., Redis Queue or SQS) for async grading.
+
+#### 3.4.9 Test-Driven Development Verification
+-   **Immediate Verification**:
+    -   Manually submit a quiz through API and check the returned score.
+    -   `assert submit_quiz(quiz_id=1, student_id=1, answers=[...])["score"] == 90`.
+-   **Incremental Testing**:
+    -   **Unit Tests**:
+        -   Test grading logic for different question types (MCQ, True/False, basic short answer).
+        -   Test `start_assessment`, `submit_assessment` functions.
+        -   _Mocking_: Mock database interactions to isolate grading logic.
+    -   **Integration Tests**:
+        -   Test the full quiz flow via API: start -> submit -> check score.
+        -   Simulate various correct/incorrect answer combinations.
+        -   Verify `quiz_attempts` and `quiz_responses` tables are populated correctly.
+        -   _Minimal Setup_: In-memory SQLite for data.
+    -   **End-to-End Tests**:
+        -   Student takes a quiz: Clicks "Start Quiz" -> Answers questions -> Clicks "Submit" -> Views score.
+        -   Teacher reviews assignment: Login as teacher -> Go to assignment dashboard -> See student submission -> Enter grade/feedback.
+
+#### 3.4.10 Testing Strategy
+-   **Unit Tests**: Pytest for grading functions and service methods.
+-   **Integration Tests**: Pytest with `TestClient` for API endpoints, `asyncio` for async assessment processes.
+-   **E2E Tests**: Playwright for UI interaction.
+
+#### 3.4.11 Monitoring & Logging
+-   Logs for submission events, grading errors.
+-   Metrics for average scores, submission rates, number of attempts.
+
+#### 3.4.12 Dependencies
+-   Content Service (for quiz/assignment definitions).
+-   Auth Service, User Service.
+
+#### 3.4.13 Potential Risks & Mitigations
+-   **Risk**: Manual grading burden for subjective questions.
+    -   **Mitigation**: AI-assisted grading (stretch goal), clear rubric definitions, teacher dashboards to streamline review.
+-   **Risk**: Cheating/tampering with submissions.
+    -   **Mitigation**: Server-side validation, anti-cheating measures (e.g., randomized question order, timed exams).
+
+## 3.5 Real-time Feedback System (Feedback Service)
+
+#### 3.5.1 Core Functionality
+-   Provides immediate feedback on student answers during quizzes/exercises.
+-   Suggestions for improvement or reference materials based on incorrect answers.
+-   Logs student interactions for adaptive learning engine.
+
+#### 3.5.2 Technical Design & Architecture
+-   **Technology**: FastAPI for feedback API, potentially WebSockets for real-time interaction.
+-   **Database**: PostgreSQL for feedback rules and logs of interactions. MongoDB could be considered for flexible storage of interaction logs.
+-   **Schema**:
+    -   `feedback_rules` table (`id`, `content_id`, `question_id`, `expected_answer_regex`, `feedback_message`, `suggestion_content_id`).
+    -   `student_interactions` table (`id`, `student_id`, `content_id`, `question_id`, `input_text`, `is_correct`, `timestamp`).
+-   **Communication**:
+    -   REST API for initial feedback requests.
+    -   WebSocket for continuous, low-latency feedback during complex exercises.
+-   **AI Integration**: Feedback rules can be explicitly defined or generated/refined by the Adaptive Learning Engine.
+
+#### 3.5.3 User Experience
+-   Instantaneous pop-up feedback or inline messages.
+-   Clear, constructive feedback messages.
+-   Links to relevant learning materials for remediation.
+
+#### 3.5.4 Data Management
+-   Feedback rules defined and stored in PostgreSQL.
+-   Detailed student interaction logs (for adaptive learning) stored in the database or sent to an analytics pipeline.
+
+#### 3.5.5 Error Handling & Edge Cases
+-   No feedback rule found for a given answer.
+-   Invalid input.
+-   Overload of feedback requests.
+
+#### 3.5.6 Security Considerations
+-   Ensure feedback is tied to student session and not exploitable.
+
+#### 3.5.7 Performance & Scalability
+-   Low latency for feedback responses is critical.
+-   Caching frequently accessed feedback rules.
+-   Asynchronous logging of interactions to avoid blocking feedback responses.
+
+#### 3.5.8 Deployment & Infrastructure
+-   Containerized FastAPI service on Kubernetes.
+-   PostgreSQL RDS.
+-   Potentially Redis for caching and/or a message queue (SQS) for async logging.
+
+#### 3.5.9 Test-Driven Development Verification
+-   **Immediate Verification**:
+    -   Manually send an answer to the feedback API and check the response.
+    -   `assert get_feedback("What is 2+2?", "4")["message"] == "Correct!"`.
+-   **Incremental Testing**:
+    -   **Unit Tests**:
+        -   Test `evaluate_answer` function against various predefined rules (regex matching, exact match).
+        -   Test `generate_feedback_message`.
+        -   Test `log_interaction` (mocking database/message queue).
+        -   _Mocking_: Functions to retrieve feedback rules or reference content.
+    -   **Integration Tests**:
+        -   Test the feedback API endpoint for different answers and questions.
+        -   Verify interaction logs are created.
+        -   Test WebSocket connection and message exchange (if implemented).
+        -   _Minimal Setup_: In-memory data for feedback rules.
+    -   **End-to-End Tests**:
+        -   Student takes a quiz -> Enters wrong answer -> Verifies immediate feedback popup.
+        -   Student corrects answer -> Verifies correct feedback.
+
+#### 3.5.10 Testing Strategy
+-   **Unit Tests**: Pytest for core logic.
+-   **Integration Tests**: Pytest with `TestClient` for HTTP APIs, `websockets` library for WebSocket tests.
+-   **E2E Tests**: Playwright for UI feedback verification.
+
+#### 3.5.11 Monitoring & Logging
+-   Logs for feedback requests, processed feedback, errors.
+-   Metrics for feedback response times, feedback rule hit rates.
+
+#### 3.5.12 Dependencies
+-   Content Service (for content to link to in feedback).
+-   Assessment Engine (as feedback is often given during assessments).
+-   Adaptive Learning Engine (consumes interaction logs for model training/refinement).
+
+#### 3.5.13 Potential Risks & Mitigations
+-   **Risk**: Generic or unhelpful feedback messages.
+    -   **Mitigation**: Iterate on feedback rule design, A/B test feedback messages, allow teachers to customize, AI-driven feedback generation (stretch goal).
+-   **Risk**: Performance bottleneck for real-time feedback.
+    -   **Mitigation**: Optimized database queries for feedback rules, aggressive caching, lightweight feedback logic.
+
+## 3.6 Adaptive Learning Engine (ALE Service)
+
+#### 3.6.1 Core Functionality
+-   Analyzes student performance data, learning styles, and progress.
+-   Generates personalized learning paths and content recommendations.
+-   Adjusts difficulty levels dynamically based on student mastery.
+-   Identifies knowledge gaps and suggests remedial content.
+
+#### 3.6.2 Technical Design & Architecture
+-   **Technology**: Python (FastAPI for API, PyTorch/TensorFlow for ML models).
+-   **Data Sources**: Student interaction logs (from Feedback Service, Assessment Service), student profiles, content metadata (from Content Service).
+-   **Model**:
+    -   Initial MVP: Rule-based adaptive logic (e.g., if score < 70%, recommend prerequisite content; if student struggles with topic X, suggest specific exercises).
+    -   Future Iteration: Machine learning models (e.g., Bayesian Knowledge Tracing, Deep Knowledge Tracing, Reinforcement Learning) trained on historical student data.
+-   **Data Storage for ML**: Data Lake (S3 for raw data, Parquet/Delta Lake for processed data).
+-   **Prediction Endpoint**: API for recommending content: `/ale/recommend/student/{id}`.
+-   **Training Pipeline**: Separate data processing and model training jobs (e.g., AWS SageMaker, or scheduled Lambda/EC2 instances).
+
+#### 3.6.3 User Experience
+-   "Recommended for you" section on student dashboard.
+-   Dynamic adjustments to content within a course.
+-   Clear display of achieved mastery levels.
+
+#### 3.6.4 Data Management
+-   Student performance data (quiz scores, feedback interactions) consumed from other services.
+-   Aggregated data about student mastery and progress stored in PostgreSQL or a dedicated analytics database.
+-   ML model artifacts stored in S3.
+
+#### 3.6.5 Error Handling & Edge Cases
+-   Insufficient data for recommendations.
+-   Stale model predictions.
+-   Model bias leading to unfair recommendations.
+
+#### 3.6.6 Security Considerations
+-   Sensitive student data used for training should be anonymized where possible.
+-   Models should not expose private student information.
+
+#### 3.6.7 Performance & Scalability
+-   Recommendation requests need to be low-latency.
+-   Batch processing for model training.
+-   Separate compute for training and inference.
+
+#### 3.6.8 Deployment & Infrastructure
+-   API served by containerized FastAPI on Kubernetes.
+-   ML training on dedicated compute (e.g., AWS SageMaker endpoints, or EC2 instances).
+-   S3 for data lake and model storage.
+
+#### 3.6.9 Test-Driven Development Verification
+-   **Immediate Verification**:
+    -   Manually call recommendation API for a test student and check if it suggests expected content based on simulated performance.
+    -   For rule-based: `assert recommend_content(student_id=1, performance={"topic_A": 0.6})[0]["topic"] == "topic_A_remedial"`.
+-   **Incremental Testing**:
+    -   **Unit Tests**:
+        -   Test rule-based logic for content recommendation.
+        -   Test data preprocessing functions for ML models (once implemented).
+        -   Test the `recommend` function of the service.
+        -   _Mocking_: Mock data retrieval (student history, content info) when testing ML logic.
+    -   **Integration Tests**:
+        -   Test ALE API endpoint for recommendations.
+        -   Verify integration with data sources (e.g., pulling a mock student's assessment history).
+        -   _Minimal Setup_: Use small, predefined datasets to simulate student data for testing rule-based recommendations.
+    -   **End-to-End Tests**:
+        -   Student completes a quiz poorly -> Navigates to dashboard -> Verifies new recommended content appears based on performance.
+        -   Teacher views student progress -> Sees mastery levels updated.
+
+#### 3.6.10 Testing Strategy
+-   **Unit Tests**: Pytest for rule evaluation and ML helper functions.
+-   **Integration Tests**: Pytest with `TestClient` for API, mock external data sources.
+-   **E2E Tests**: Playwright to verify UI changes based on recommendations.
+-   **ML-specific tests**:
+    -   Data integrity tests for input to models.
+    -   Offline evaluation of model performance (precision, recall, F1-score) on holdout sets.
+    -   A/B testing on production for real-world impact.
+
+#### 3.6.11 Monitoring & Logging
+-   Logs for recommendation requests and responses.
+-   Metrics for model inference latency, recommendation diversity, model accuracy over time, data drift.
+
+#### 3.6.12 Dependencies
+-   Assessment Service, Feedback Service (for student interaction data).
+-   Content Service (for content details).
+-   User Service.
+
+#### 3.6.13 Potential Risks & Mitigations
+-   **Risk**: "Cold start" problem for new students (no data for recommendations).
+    -   **Mitigation**: Initial default learning paths, collaborative filtering (recommendations based on similar students), content popularity.
+-   **Risk**: Algorithmic bias leading to unfair or ineffective recommendations.
+    -   **Mitigation**: Monitor for bias, employ fairness metrics, diverse training data, human oversight.
+-   **Risk**: Model decay over time.
+    -   **Mitigation**: Regular model retraining, continuous monitoring of model performance in production.
+
+## 3.7 Dashboard & Reporting (Dashboard Service & Analytics Service)
+
+#### 3.7.1 Core Functionality
+-   **Student Dashboard**: Progress tracking, mastery visualization, recommended content, upcoming assignments.
+-   **Teacher Dashboard**: Class overview, student performance metrics, assignment grading queue, content creation tools.
+-   **Admin Dashboard**: User management, platform analytics (usage, popular courses), system health monitoring.
+-   Generate various reports (e.g., student performance reports, course completion rates).
+
+#### 3.7.2 Technical Design & Architecture
+-   **Dashboard Service**: Frontend (React) interacting with various backend services.
+-   **Analytics Service**: Backend (FastAPI) responsible for aggregating data from other services (or directly from data warehouse) for reporting.
+-   **Data Warehouse/Lake**: Data from all services (PostgreSQL, interaction logs, etc.) streamed/batched into a central data store (e.g., AWS Redshift or a data lake built on S3/Athena).
+-   **Reporting**: Complex reports generated by Analytics Service. Simpler dashboards might directly query operational databases (with caution).
+
+#### 3.7.3 User Experience
+-   Clear, concise data visualizations.
+-   Intuitive navigation between different views.
+-   Customizable widgets (stretch goal).
+
+#### 3.7.4 Data Management
+-   Data sourced from various services and potentially a data warehouse.
+-   Aggregated metrics cached in Redis for quick dashboard loading.
+
+#### 3.7.5 Error Handling & Edge Cases
+-   No data available for a student/class.
+-   Permissions issues preventing access to certain reports.
+
+#### 3.7.6 Security Considerations
+-   Strict RBAC to ensure users only see data relevant to their role and permissions (e.g., teachers only see their students).
+
+#### 3.7.7 Performance & Scalability
+-   Efficient data aggregation queries.
+-   Avoid direct, heavy queries on operational databases; rely on pre-aggregated data or data warehouse.
+-   Heavy use of caching for dashboard data.
+
+#### 3.7.8 Deployment & Infrastructure
+-   Frontend deployed as static assets on S3/CloudFront.
+-   Analytics Service as containerized FastAPI on Kubernetes.
+-   Data warehouse (e.g., RDS PostgreSQL acting as a simple data warehouse initially, later Redshift).
+
+#### 3.7.9 Test-Driven Development Verification (Analytics Service Example)
+-   **Immediate Verification**:
+    -   Manually query `/analytics/student-progress/{student_id}` and check the basic structure of the returned data.
+    -   Check a specific pre-aggregated value: `assert get_student_avg_score(1) == 85.5`.
+-   **Incremental Testing**:
+    -   **Unit Tests**:
+        -   Test data aggregation functions (e.g., calculating average score from raw attempt data).
+        -   Test report generation logic.
+        -   _Mocking_: Functions to retrieve raw data from databases or data lake.
+    -   **Integration Tests**:
+        -   Test API endpoints for various dashboard views (e.g., `/dashboards/teacher/{id}`, `/analytics/course-completion`).
+        -   Verify dashboard data correctly reflects underlying data changes (e.g., after a student submits a quiz, their score reflects on the teacher dashboard).
+        -   _Minimal Setup_: Use an in-memory database populated with test data mimicking the structure of aggregated data.
+    -   **End-to-End Tests**:
+        -   Login as student -> Verify progress chart updates after completing a lesson.
+        -   Login as teacher -> View class dashboard -> Verify student scores are accurate.
+        -   Login as admin -> View platform usage stats.
+
+#### 3.7.10 Testing Strategy
+-   **Unit Tests**: Pytest for data transformation and aggregation logic.
+-   **Integration Tests**: Pytest with `TestClient` for API endpoints.
+-   **E2E Tests**: Playwright to verify UI components display correct data.
+
+#### 3.7.11 Monitoring & Logging
+-   Logs for report generation, dashboard access.
+-   Metrics for dashboard load times, most accessed reports.
+
+#### 3.7.12 Dependencies
+-   All other services (as data sources).
+-   Data Warehouse/Lake.
+
+#### 3.7.13 Potential Risks & Mitigations
+-   **Risk**: Data inconsistencies across dashboards due to delayed sync.
+    -   **Mitigation**: Implement robust ETL/ELT processes, clear data refresh schedules, real-time analytics for critical metrics.
+-   **Risk**: Performance degradation due to complex queries on large datasets.
+    -   **Mitigation**: Data warehousing, pre-aggregation, efficient indexing, caching.
+
+## 4. Infrastructure and Deployment
+
+#### 4.1 Cloud Provider
+-   AWS (Amazon Web Services).
+
+#### 4.2 Compute
+-   **Kubernetes (EKS)**: For deploying all FastAPI microservices as Docker containers.
+    -   `Deployment` for each service, `Service` for internal communication, `Ingress` for external access via API Gateway.
+-   **AWS Lambda**: Potentially for event-driven, serverless tasks (e.g., processing analytics events, triggering model retraining).
+
+#### 4.3 Database
+-   **Amazon RDS (PostgreSQL)**: For primary relational data. Multi-AZ deployment for high availability, read replicas for scaling read-heavy workloads.
+-   **Amazon S3**: For storing static content (videos, images), document uploads, and as the foundation for the data lake.
+
+#### 4.4 Networking
+-   **Amazon VPC**: Private network for all AWS resources.
+-   **AWS Application Load Balancer (ALB)**: Distributes incoming traffic to frontend and API Gateway.
+-   **AWS Route 53**: DNS management.
+-   **AWS WAF**: Web Application Firewall for protecting against common web exploits.
+
+#### 4.5 Caching & Messaging
+-   **Amazon ElastiCache (Redis)**: For in-memory caching and session management.
+-   **Amazon SQS/SNS**: For asynchronous message queuing and notifications between services, especially for analytics events or long-running tasks. (RabbitMQ/Kafka as more mature alternatives for complex event streams if SQS/SNS proves limiting).
+
+#### 4.6 Content Delivery
+-   **Amazon CloudFront**: CDN for fast delivery of static frontend assets and content from S3.
+
+#### 4.7 CI/CD Pipeline
+-   **GitHub Actions / GitLab CI/CD**:
+    1.  **Code Commit**: Developers push code to GitHub/GitLab.
+    2.  **Linting & Static Analysis**: Run linters (flake8, mypy), security scanners (bandit).
+    3.  **Unit Tests**: Run Pytest for all services.
+    4.  **Integration Tests**: Run `TestClient` tests, potentially with in-memory DBs or `moto` mocks.
+    5.  **Build Docker Images**: For each updated service. Tag with commit SHA.
+    6.  **Push to ECR**: Push Docker images to Amazon Elastic Container Registry.
+    7.  **Kubernetes Deployment**: Update Kubernetes deployments (e.g., using `kubectl apply` or Helm charts) to roll out new versions.
+    8.  **E2E Tests**: Run Playwright tests against a staging environment after deployment.
+
+## 5. Testing and Quality Assurance
+
+### 5.1 Testing Hierarchy
+1.  **Unit Tests (Pytest)**:
+    -   **Scope**: Individual functions, methods, classes.
+    -   **Goal**: Verify correctness of smallest testable units.
+    -   **Approach**: Isolated testing, mock external dependencies extensively (database calls, API calls, file system).
+    -   **Tools**: `pytest`, `pytest-mock`.
+    -   **Test Patterns**:
+        -   `test_function_name_success_case()`
+        -   `test_function_name_edge_case_invalid_input()`
+        -   `test_class_method_with_mocked_dependency()`
+2.  **Integration Tests (Pytest with FastAPI `TestClient`)**:
+    -   **Scope**: Interactions between modules or services.
+    -   **Goal**: Verify components work together correctly.
+    -   **Approach**: Use FastAPI's `TestClient` for API endpoints. For database interactions, prefer in-memory databases (e.g., SQLite for PostgreSQL-like schema tests, or mock the database layer only when strictly necessary and simple). For external services (S3), use test doubles like `moto`.
+    -   **Tools**: `pytest`, FastAPI `TestClient`, `SQLAlchemy` (with SQLite), `moto`.
+    -   **Test Patterns**:
+        -   `test_api_endpoint_success_status_code()`
+        -   `test_service_integration_with_mock_db_retrieval()`
+        -   `test_service_writes_to_mock_s3_bucket()`
+3.  **End-to-End Tests (Playwright)**:
+    -   **Scope**: Full user flows across the entire system (frontend to backend).
+    -   **Goal**: Validate critical user journeys from a user's perspective.
+    -   **Approach**: Automate browser actions directly on deployed (staging) environments. Keep scenarios minimal and critical. Seed test data directly into the database or via test-specific API endpoints to ensure consistent test setup.
+    -   **Tools**: Playwright, Pytest for test runner.
+    -   **Test Patterns**:
+        -   `test_student_completes_course_flow()`
+        -   `test_teacher_creates_and_assigns_quiz()`
+        -   `test_admin_user_management_flow()`
+
+### 5.2 Test Data Management
+-   **Unit Tests**: In-memory data structures, simple dictionaries, or fixtures.
+-   **Integration Tests**:
+    -   For database-dependent tests: Use `factory_boy` to generate realistic, randomized data for models. Load small, predefined datasets into an in-memory SQLite database before each test or test suite.
+    -   Ensure test data is cleaned up (e.g., using fixtures with `teardown`).
+-   **End-to-End Tests**:
+    -   Use dedicated API endpoints in the staging environment to create/delete test users, courses, and content.
+    -   Or, for simpler cases, directly insert/delete from the staging database *before* the test run, and clean up afterward.
+
+### 5.3 Mocking Strategy (Simplified Approach)
+-   **Prefer Dependency Injection**: Design all services and components to accept their dependencies (e.g., database session, external API clients) via constructor arguments or function parameters. This makes it easy to inject mock/stub implementations during testing.
+-   **Use Simple Stubs/Fakes**: For common interfaces (e.g., a database repository), create simple in-memory implementations (fakes) or stubs that return predefined values.
+-   **Mock at System Boundaries**:
+    -   **Databases**: Use in-memory SQLite for PostgreSQL schema tests or `pytest-mock` to directly patch `SQLAlchemy` session methods (e.g., `session.add`, `session.query`).
+    -   **External APIs**: Use `httpx.mock` or `requests_mock` (if `requests` is used) to simulate API responses. Define specific responses for specific URLs and methods.
+    -   **File Storage (S3)**: Use `moto` library to run a local, in-memory mock of AWS S3 services.
+-   **Avoid Over-Moching**: Do not mock internal component interactions unless absolutely necessary for isolation. Test the integration between closely related internal components directly.
+
+### 5.4 Test Tools & Frameworks
+-   **Python**:
+    -   `pytest`: Test runner and framework.
+    -   `pytest-mock`: For mocking objects and functions.
+    -   `httpx` (for FastAPI's `TestClient`): For making HTTP requests in integration tests.
+    -   `SQLAlchemy`: ORM.
+    -   `factory_boy`: For generating test data.
+    -   `moto`: For mocking AWS services (S3, SQS, etc.) in tests.
+-   **JavaScript/TypeScript (for Frontend)**:
+    -   `Jest` / `React Testing Library`: For unit/component tests of React components.
+    -   `Playwright`: For end-to-end browser automation tests.
+
+## 6. Monitoring and Maintenance
+
+#### 6.1 Logging
+-   **Structured Logging**: All services will emit logs in JSON format.
+-   **Centralized Logging**: Logs will be sent to AWS CloudWatch Logs. For deeper analysis, AWS CloudWatch Logs can forward to an ELK (Elasticsearch, Logstash, Kibana) stack or Datadog/Splunk.
+-   **Log Levels**: Use appropriate levels (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+-   **Contextual Logging**: Include request IDs, user IDs, and other relevant context for tracing.
+
+#### 6.2 Monitoring
+-   **Application Performance Monitoring (APM)**:
+    -   **Metrics**: Prometheus/Grafana (or AWS CloudWatch Metrics, Datadog) to track:
+        -   Request rates, error rates, latency (REL metrics).
+        -   CPU, memory, disk utilization of containers/nodes.
+        -   Database connection pool usage, query performance.
+        -   Queue lengths for message brokers.
+        -   Custom metrics related to specific business logic (e.g., number of personalized recommendations served, quiz completion rates).
+    -   **Tracing**: OpenTelemetry (or AWS X-Ray) for distributed tracing across microservices to identify performance bottlenecks.
+-   **Uptime Monitoring**: External tools (e.g., UptimeRobot, Pingdom) to monitor public endpoints.
+-   **Security Monitoring**: AWS Security Hub, GuardDuty.
+
+#### 6.3 Alerting
+-   Set up alerts based on critical metrics and log patterns.
+-   **Examples**: High error rates (e.g., >5% 5xx errors), service latency spikes, low disk space, database connection failures, failed deployments.
+-   **Channels**: PagerDuty, Slack, Email, SMS.
+
+#### 6.4 Maintenance
+-   **Regular Updates**: Patching operating systems, updating libraries and dependencies to address security vulnerabilities and stability issues.
+-   **Database Backups**: Automated daily backups (managed by AWS RDS).
+-   **Disaster Recovery**: Implement recovery point objectives (RPO) and recovery time objectives (RTO) for critical services. Cross-region backups.
+-   **Performance Tuning**: Regular review of metrics and query logs to identify and optimize bottlenecks.
+-   **Security Audits**: Regular vulnerability scanning (e.g., AWS Inspector for EC2, Clair for container images). Penetration testing periodically.
+-   **AI Model Retraining**: Automated pipeline for retraining the Adaptive Learning Engine model with fresh data to prevent model decay.
+
+## 7. Dependencies
+
+-   **Auth0/Cognito (Potentially for Auth)**: For enterprise-grade auth if scale or complex identity management is needed. Initial plan uses in-house.
+-   **External Content Providers**: If Lumina integrates with third-party content libraries.
+-   **AWS Services**: EC2, EKS, RDS, S3, CloudFront, ECR, ALB, SQS/SNS, ElastiCache, CloudWatch, Route 53, WAF, etc.
+-   **Third-party Libraries**: Python (`FastAPI`, `SQLAlchemy`, `PyTorch`), Node.js (`React`, `TypeScript`).
+-   **Payment Gateway (Stripe/PayPal)**: If subscription or course purchasing features are added later.
+-   **Communication APIs (Twilio/SendGrid)**: For transactional emails/SMS (e.g., password resets).
+
+## 8. Potential Risks & Mitigations
+
+-   **Risk**: **Scope Creep**.
+    -   **Mitigation**: Clearly defined MVP, strict adherence to planned features for initial releases, backlog prioritization, clear change management process.
+-   **Risk**: **Performance & Scalability Issues**.
+    -   **Mitigation**: Microservices architecture for horizontal scaling, use of cloud-native managed services, extensive caching, load testing, performance monitoring.
+-   **Risk**: **Data Security & Privacy Breaches**.
+    -   **Mitigation**: End-to-end encryption, strict access control, regular security audits, input validation, compliance with data protection regulations (GDPR, FERPA if applicable). Anonymization of sensitive data for ML models.
+-   **Risk**: **AI Model Bias/Fairness Concerns**.
+    -   **Mitigation**: Diverse and representative training datasets, regular monitoring for bias metrics, human-in-the-loop validation for critical recommendations, transparency in AI decisions (where possible).
+-   **Risk**: **High Cloud Costs**.
+    -   **Mitigation**: Cost monitoring (AWS Cost Explorer), right-sizing instances, Reserved Instances/Savings Plans, lifecycle policies for S3, optimizing data transfer. Serverless options where appropriate.
+-   **Risk**: **Complexity of Microservices Management**.
+    -   **Mitigation**: Strong DevOps practices, robust CI/CD, container orchestration (Kubernetes for automation), comprehensive monitoring and logging, monorepo strategy for initial simplification.
+-   **Risk**: **Integration Challenges Between Services**.
+    -   **Mitigation**: Use clear API contracts (OpenAPI/Swagger), standardized communication protocols (HTTP/REST, Async through Message Broker), comprehensive integration tests.
+-   **Risk**: **Developer Productivity Slowdown with Monorepo (at high scale)**.
+    -   **Mitigation**: Proper tooling (e.g., Bazel, Nx for monorepo management), clear code ownership, automated testing to prevent regressions. If it becomes a significant bottleneck, transition to a polyrepo structure for specific services.
+-   **Risk**: **Adaptive Learning Engine effectiveness**.
+    -   **Mitigation**: Start with simple rule-based system, incrementally add complexity, A/B testing of recommendations, continuous collection of feedback loops, and iterative model improvements.
+
+## 9. Implementation Timeline (High-Level estimate)
+
+This timeline is a high-level estimate and should be broken down into sprints for agile development.
+
+**Phase 1: Foundation & Core MVP (3-4 Months)**
+-   **Month 1**:
+    -   Architecture design finalization.
+    -   Setup CI/CD pipeline.
+    -   Auth & User Management (services, DB schema, API, basic frontend integration).
+    -   Infrastructure setup (VPC, EKS cluster, RDS).
+-   **Month 2**:
+    -   Course Management (services, DB schema, API, teacher UI for course creation).
+    -   Content Delivery (services, S3 integration, basic lesson/video display).
+-   **Month 3**:
+    -   Assessment Engine (quiz administration, basic auto-grading, student submission).
+    -   Real-time Feedback (initial rule-based feedback, basic integration).
+    -   Initial Student Dashboard (progress view, course list).
+    -   Comprehensive Unit & Integration Testing.
+-   **Month 4**:
+    -   Basic Adaptive Learning (rule-based recommendations).
+    -   Teacher Dashboard (class overview, simple grading queue).
+    -   E2E testing, performance tuning, security enhancements.
+    -   **MVP Launch Preparation.**
+
+**Phase 2: Enhancement & Scalability (4-6 Months)**
+-   Iterative improvement of existing features based on user feedback.
+-   Advanced Adaptive Learning (ML model integration, personalized path generation).
+-   Detailed Reporting & Analytics (for Teachers & Admins).
+-   Advanced Content types (interactive simulations, advanced assignments).
+-   Communication features.
+-   Performance optimizations and scalability improvements.
+
+**Phase 3: Future Expansion (Ongoing)**
+-   Mobile applications.
+-   Integration with external LMS/SIS.
+-   Collaborative learning features.
+-   Advanced AI features (e.g., AI tutors, automated content generation).
+-   Gamification.
+
+---
+**End of Project Plan**
